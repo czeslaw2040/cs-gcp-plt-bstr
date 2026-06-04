@@ -1,0 +1,187 @@
+# Copyright 2026 Czeslaw Szubert
+# Copyright 2019 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# ==============================================================================
+# Terraform Cloud Build Pipeline
+# ==============================================================================
+# This pipeline automates Terraform init, plan, and apply/destroy operations.
+# It uses branch names to match environment directories (e.g., branch 'dev' 
+# maps to 'environments/dev').
+#
+# Usage Instructions:
+# 1. Standard Deployment (Apply):
+#    Pushes to environment branches will automatically trigger an 'apply' 
+#    because the substitution variable `_TF_ACTION` defaults to 'apply'.
+#
+# 2. Tearing Down Resources (Destroy):
+#    To destroy resources in a non-prod environment, run this build manually 
+#    and override `_TF_ACTION` to 'destroy'. 
+#    Example: gcloud builds submit --config=cloudbuild.yaml --substitutions=BRANCH_NAME="dev",_TF_ACTION="destroy"
+#    NOTE: A built-in safeguard prevents the 'destroy' action on the 'prod' branch.
+# ==============================================================================
+
+# ==============================================================================
+# Branch-Based Environment Mapping
+# ==============================================================================
+# $BRANCH_NAME is automatically set by Cloud Build based on the branch that triggered the build.
+# If the directory "environments/$BRANCH_NAME/" exists, (e.g., you pushed to the dev branch, 
+# and the environments/dev/ directory exists), the pipeline runs plan and apply/destroy for that environment.
+# If the directory does not exist, it runs plan only for all environments under the "environments/" directory.
+# ==============================================================================
+
+# ==============================================================================
+# Terraform Variables Configuration
+# ==============================================================================
+# This script uses two variable files during Terraform operations:
+# 1. Global variables: environments/terraform.tfvars (passed as ../terraform.tfvars)
+# 2. Environment-specific variables: environments/<environment>/terraform.tfvars
+#    Implicitly included in terraform commands because the file is located 
+#    in the current directory where terraform is executed.
+# ==============================================================================
+
+steps:
+- id: 'validate substitutions'
+  name: 'alpine'
+  entrypoint: 'sh'
+  args:
+  - '-c'
+  - |
+      echo "Validating substitution variables..."
+      echo "    _TF_ACTION: '$_TF_ACTION'"
+      if [ "$_TF_ACTION" != "apply" ] && [ "$_TF_ACTION" != "destroy" ]; then
+        echo "ERROR: _TF_ACTION must be 'apply' or 'destroy'. Got: '$_TF_ACTION'"
+        exit 1
+      fi
+      
+      echo "    _PROJECT_ID: '$_PROJECT_ID'"
+      if [ "$_PROJECT_ID" = "none" ] || [ -z "$_PROJECT_ID" ]; then
+        echo "ERROR: _PROJECT_ID must be set and cannot be 'none'."
+        exit 1
+      fi
+      
+      echo "    _PIPELINE_ID: '$_PIPELINE_ID'"
+      if [ "$_PIPELINE_ID" = "none" ] || [ -z "$_PIPELINE_ID" ]; then
+        echo "ERROR: _PIPELINE_ID must be set and cannot be 'none'."
+        exit 1
+      fi
+      echo "Validation passed."
+
+- id: 'branch name'
+  name: 'alpine'
+  entrypoint: 'sh'  
+  args: 
+  - '-c'
+  - | 
+      echo "***********************"
+      echo "$BRANCH_NAME"
+      echo "***********************"
+
+- id: 'tf init'
+  name: '${_TERRAFORM_IMAGE}'
+  entrypoint: 'sh'
+  args: 
+  - '-c'
+  - |
+      if [ -d "environments/$BRANCH_NAME/" ]; then
+        cd environments/$BRANCH_NAME
+        terraform init -backend-config="prefix=${_PIPELINE_ID}/$BRANCH_NAME" -backend-config="bucket=${_PROJECT_ID}-tfstate"
+      else
+        for dir in environments/*/
+        do 
+          cd ${dir}   
+          env=$(basename "$dir")
+          echo ""
+          echo "*************** TERRAFORM INIT ******************"
+          echo "******* At environment: ${env} ********"
+          echo "*************************************************"
+          terraform init -backend-config="prefix=${_PIPELINE_ID}/${env}" -backend-config="bucket=${_PROJECT_ID}-tfstate" || exit 1
+          cd ../../
+        done
+      fi 
+
+# [START tf-plan]
+- id: 'tf plan'
+  name: '${_TERRAFORM_IMAGE}'
+  entrypoint: 'sh'
+  args: 
+  - '-c'
+  - | 
+      if [ "$_TF_ACTION" = "destroy" ]; then
+        PLAN_ARGS="-destroy"
+      else
+        PLAN_ARGS=""
+      fi
+
+      if [ -d "environments/$BRANCH_NAME/" ]; then
+        cd environments/$BRANCH_NAME
+        terraform plan $$PLAN_ARGS -var-file=$_VAR_FILE
+      else
+        for dir in environments/*/
+        do 
+          cd ${dir}   
+          env=$(basename "$dir")
+          echo ""
+          echo "*************** TERRAFORM PLAN ******************"
+          echo "******* At environment: ${env} ********"
+          echo "*************************************************"
+          terraform plan $$PLAN_ARGS -var-file=$_VAR_FILE || exit 1
+          cd ../../
+        done
+      fi 
+# [END tf-plan]
+
+# [START tf-apply]
+- id: 'tf apply'
+  name: '${_TERRAFORM_IMAGE}'
+  entrypoint: 'sh'
+  args: 
+  - '-c'
+  - | 
+      # To allow destroying prod, uncomment the following line:
+      # ALLOW_PROD_DESTROY="true"
+
+      if [ -d "environments/$BRANCH_NAME/" ]; then
+        cd environments/$BRANCH_NAME
+        
+        # Safeguard: Prevent accidental destruction of production
+        if [ "$_TF_ACTION" = "destroy" ] && [ "$BRANCH_NAME" = "prod" ]; then
+          if [ "$$ALLOW_PROD_DESTROY" != "true" ]; then
+            echo "***************************** ERROR *******************************"
+            echo "Destroy action is forbidden on the 'prod' environment by default."
+            echo "To override, uncomment 'ALLOW_PROD_DESTROY' in cloudbuild.yaml."
+            echo "*******************************************************************"
+            exit 1
+          fi
+          echo "WARNING: Proceeding with PROD destruction as explicitly permitted in cloudbuild.yaml."
+        fi
+        
+        terraform $_TF_ACTION -var-file=$_VAR_FILE -auto-approve
+      else
+        echo "***************************** SKIPPING ACTION *******************************"
+        echo "Branch '$BRANCH_NAME' does not represent an official environment."
+        echo "*******************************************************************************"
+      fi
+# [END tf-apply] 
+  
+
+logsBucket: 'gs://${_PROJECT_ID}-cloudbuild-logs'
+options:
+  logging: GCS_ONLY
+substitutions:
+  _VAR_FILE: '../terraform.tfvars'
+  _TERRAFORM_IMAGE: 'hashicorp/terraform:1.15.0' # Docker image and version used to execute Terraform steps.
+  _TF_ACTION: 'apply'     # Default action is 'apply'. Override to 'destroy' for tearing down resources.
+  _PROJECT_ID: 'none'     # Used for bucket names. Placeholder - must be set from Cloud Build trigger.
+  _PIPELINE_ID: 'none'    # Used for bucket prefix. Placeholder - must be set from Cloud Build trigger.
