@@ -117,15 +117,22 @@ For each environment:
     gh repo create <Owner>/<Platform ID>-bstr --template github-user/my-plt-bstr --private --clone
     cd <Platform ID>-bstr
     ```
-1. Make sure you are on the branch corresponding to the environment you are creating and the environment specific folder `environments/[environment]`.
+1. Repeat the above to create the **Platform CICD Git repository**; the cicd repository must exist so that the bootstrap pipeline can create a trigger for it.
+1. Clone the **Platform Bootstrap Git repository** to your IDE. Make sure you are on the branch corresponding to the environment you are creating and the environment specific folder `environments/[environment]`.
 1. Update global platform configurations `environments/terraform.tfvars` and environment specific configurations `environments/[environment]/terraform.tfvars` as per your target platform.
-1. The **Platform CICD Git repository** (`[Platform ID]-cicd`) must also exist in order to create the CICD Pipeline trigger, which is done as part of the **Bootstrap Pipeline** execution. You can create your CICD Repository from the provided Platform CICD Repository template. Make sure to add **Google Cloud Build** to **GitHub Apps** on the repository.
 1. Execute the bootstrap script from the root of your repository, passing your target environment (e.g., `dev` or `prod`).
     ```bash
     ./scripts/bootstrap.sh dev
     ```
 
-    **Note:** The script will automatically pause before applying the Terraform configuration. It will provide a URL for you to visit to connect your GitHub repositories to Cloud Build. Follow the provided URL, connect the required repositories, but **cancel** the dialog before creating a trigger (Terraform will create the triggers for you). Once connected, return to the terminal and press Enter to resume the script. The script will then automatically handle the initial local application, GCS state migration, and cleanup.
+    - The script will automatically pause before applying the Terraform configuration. It will provide a URL for you to visit to connect your GitHub repositories to Cloud Build. Follow the provided URL. 
+    - If the Cloud Build API is not yet enabled in the project, you will be asked to enable it first. 
+    - Then follow the dialog to authorize GitHub, add **Google Cloud Build** to **GitHub Apps** on the repository.
+    - Connect the bootstrap and cicd repositories, but exit the dialog before creating a trigger (Terraform will create the triggers for you).
+    - Once connected, return to the terminal and press Enter to resume the script. 
+    - The script will then automatically handle the initial local application, GCS state migration, and cleanup.
+1. Platform bootstrap is now complete. You can go to your **CICD GCP Project**, check to make sure the resources have been created, and manually trigger the **Platform Bootstrap Pipeline** one more time to make sure it runs successfully. You will only need to rerun this pipeline if you change any of the terraform code or settings in this repository, which should not be required under normal platform operations - all application specific build and deployments are managed through the **Platform CICD Pipeline**.
+1. Next, proceed to clone the **Platform CICD Git repository** and start adding your application pipelines.
 
 
 ### Subsequent executions of the Bootstrap Pipeline

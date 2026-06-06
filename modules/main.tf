@@ -59,7 +59,7 @@ resource "google_project_service" "project_apis" {
 
 # Create a dedicated service account for Cloud Build
 resource "google_service_account" "cloud_build_sa" {
-  # Servcie Account name limitations:
+  # Service Account name limitations:
   #   Length: 6–30 characters.
   #   Characters: Lowercase letters, numbers, and hyphens (-).
   account_id   = "${local.sanitized_platform_id}-${local.sanitized_env}-cbld"
